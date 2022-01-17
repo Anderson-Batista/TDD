@@ -18,8 +18,13 @@ import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.ErrorCollector;
 import org.junit.rules.ExpectedException;
+import org.mockito.ArgumentCaptor;
+import org.mockito.InjectMocks;
+import org.mockito.Mock;
 import org.mockito.Mockito;
+import org.mockito.MockitoAnnotations;
 
+import builders.LocacaoBuilder;
 import daos.LocacaoDAO;
 import daos.SPCService;
 import entidades.Filme;
@@ -27,14 +32,22 @@ import entidades.Locacao;
 import entidades.Usuario;
 import exceptions.FilmeSemEstoqueException;
 import exceptions.LocadoraException;
+import matchers.MatchersProprios;
 import utils.DataUtils;
 
 public class LocacaoServiceTest {
 	
+	@InjectMocks
 	private LocacaoService service;
 	
+	@Mock
 	private SPCService spc;
+	
+	@Mock
 	private LocacaoDAO dao;
+	
+	@Mock
+	private EmailService email;
 	
 	@Rule
 	public ErrorCollector error = new ErrorCollector();
@@ -44,11 +57,14 @@ public class LocacaoServiceTest {
 	
 	@Before
 	public void setup() {
-		service = new LocacaoService();
-		dao = Mockito.mock(LocacaoDAO.class);
-		service.setLocacaoDAO(dao);
-		spc = Mockito.mock(SPCService.class);
-		service.setSPCService(spc);
+		MockitoAnnotations.initMocks(this);// susbstitui as linhas abaixo
+//		service = new LocacaoService();
+//		dao = Mockito.mock(LocacaoDAO.class);
+//		service.setLocacaoDAO(dao);
+//		spc = Mockito.mock(SPCService.class);
+//		service.setSPCService(spc);
+//		email = Mockito.mock(EmailService.class);
+//		service.setEmailService(email);
 	}
 	
 	@Test
@@ -183,18 +199,82 @@ public class LocacaoServiceTest {
 	}
 	
 	@Test
-	public void naoDeveAlugarFilmeParaNegativadoSPC() throws FilmeSemEstoqueException, LocadoraException {
+	public void naoDeveAlugarFilmeParaNegativadoSPC() throws Exception{
+		//cenario
+		Usuario usuario = new Usuario("Usuario 1");
+		//Usuario usuario2 = new Usuario("Usuario 2"); // caso de erro
+		List<Filme> filmes = Arrays.asList(new Filme("Filme 1", 2, 5.0));
+		
+		Mockito.when(spc.possuiNegativacao(Mockito.any(Usuario.class))).thenReturn(true);
+		
+		//acao
+		try {
+		//verificacao
+			service.alugarFilme(usuario, filmes);
+			Assert.fail();// caso a exceção não seja lançada
+		} catch (LocadoraException e) {
+			Assert.assertThat(e.getMessage(), is("Usuário Negativado"));
+		}
+		
+		Mockito.verify(spc).possuiNegativacao(usuario);
+	}
+	
+	@Test
+	public void deveEnviarEmailParaLocacoesAtrasadas() {
+		//cenario
+		Usuario usuario = new Usuario("Usuario 1");
+		Usuario usuario2 = new Usuario("Usuario 2"); // caso de erro
+		Usuario usuario3 = new Usuario("Usuario 3");
+		
+		List<Locacao> locacoes = Arrays.asList(
+			LocacaoBuilder.umLocacao().comUsuario(usuario).atrasada().agora(),
+			LocacaoBuilder.umLocacao().comUsuario(usuario2).agora(),
+			LocacaoBuilder.umLocacao().comUsuario(usuario3).atrasada().agora());
+		
+		Mockito.when(dao.obterLocacoesPendentes()).thenReturn(locacoes);
+		
+		//acao
+		service.notificarAtrasos();
+		
+		//varificacao
+		Mockito.verify(email).notificarAtraso(usuario);//recebeu o email
+		Mockito.verify(email, Mockito.atLeastOnce()).notificarAtraso(usuario3);
+		Mockito.verify(email, Mockito.never()).notificarAtraso(usuario2);//não deve receber o email, não é testado
+		Mockito.verifyNoMoreInteractions(email);
+	}
+	
+	@Test
+	public void deveTratarErroNoSPC() throws Exception {
 		//cenario
 		Usuario usuario = new Usuario("Usuario 1");
 		List<Filme> filmes = Arrays.asList(new Filme("Filme 1", 2, 5.0));
 		
-		Mockito.when(spc.possuiNegativacao(usuario)).thenReturn(true);
+		Mockito.when(spc.possuiNegativacao(usuario)).thenThrow(new Exception("Erro"));
 		
+		//verificacao
 		exception.expect(LocadoraException.class);
-		exception.expectMessage("Usuário Negativado");
+		exception.expectMessage("Problema com SPC, tente novamente");
 		
 		//acao
 		service.alugarFilme(usuario, filmes);
+	}
+	
+	@Test
+	public void deveProrrogarUmaLocacao() {
+		//cenario
+		Locacao locacao = LocacaoBuilder.umLocacao().agora();
+		
+		//acao
+		service.prorrogarLocacao(locacao, 3);
+		
+		//verificacao
+		ArgumentCaptor<Locacao> argCapt = ArgumentCaptor.forClass(Locacao.class);
+		Mockito.verify(dao).salvar(argCapt.capture());
+		Locacao locacaoRetorno = argCapt.getValue();
+		
+		error.checkThat(locacaoRetorno.getValor(), is(12.0));
+		error.checkThat(locacaoRetorno.getDataLocacao(), MatchersProprios.ehHoje());
+		error.checkThat(locacaoRetorno.getDataRetorno(), MatchersProprios.ehHojeComDiferencaDias(3));
 	}
 }
 
