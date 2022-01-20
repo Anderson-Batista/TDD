@@ -92,6 +92,9 @@ public class LocacaoServiceTest {
 				
 		//acao
 		service.alugarFilme(usuario, filmes);
+		
+		//verificacao
+		assertThat(filmes.get(0).getEstoque(), is(0));
 	}
 	
 	@Test
